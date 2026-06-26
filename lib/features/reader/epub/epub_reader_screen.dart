@@ -1,0 +1,250 @@
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_epub_viewer/flutter_epub_viewer.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../data/local_files.dart';
+import '../../../data/models/comic_summary.dart';
+import '../../../data/repositories/providers.dart';
+import '../comic/reading_mode.dart';
+
+/// Reflowable EPUB reader — port of CB8's `EpubReader`, which used epub.js.
+/// `flutter_epub_viewer` runs the same epub.js engine in a WebView, so we get
+/// paginated reflow, font-size control, a dark theme, and CFI locations that map
+/// directly onto our `lastLocation` column for resume.
+class EpubReaderScreen extends ConsumerStatefulWidget {
+  const EpubReaderScreen({super.key, required this.comic});
+
+  final ComicSummary comic;
+
+  @override
+  ConsumerState<EpubReaderScreen> createState() => _EpubReaderScreenState();
+}
+
+class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
+  final EpubController _controller = EpubController();
+  String? _path;
+  String? _error;
+  double _progress = 0; // 0..1
+  double _fontSize = 16; // px
+  // Latest reading position (epub.js CFI). The package's live setFlow/setSpread
+  // are broken — they interpolate the enum, sending JS "EpubFlow.scrolled" rather
+  // than "scrolled" — so a mode change instead remounts EpubViewer with fresh
+  // displaySettings (which serialize correctly), resuming from this CFI.
+  String? _currentCfi;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolve();
+  }
+
+  /// Map a reading mode onto epub.js flow + spread.
+  static ({EpubFlow flow, EpubSpread spread}) _settingsFor(ReadingMode mode) => switch (mode) {
+        ReadingMode.scroll => (flow: EpubFlow.scrolled, spread: EpubSpread.none),
+        ReadingMode.single => (flow: EpubFlow.paginated, spread: EpubSpread.none),
+        ReadingMode.doublePage => (flow: EpubFlow.paginated, spread: EpubSpread.always),
+      };
+
+  Future<void> _resolve() async {
+    final uri = widget.comic.sourceUri;
+    if (uri == null) {
+      setState(() => _error = 'Could not open this book.');
+      return;
+    }
+    final abs = await resolveLibraryPath(uri);
+    if (mounted) setState(() => _path = abs);
+  }
+
+  void _onRelocated(EpubLocation location) {
+    _progress = location.progress.clamp(0, 1);
+    _currentCfi = location.startCfi; // resume point if the mode (and viewer) changes
+    final pageCount = widget.comic.pageCount;
+    // Drive the catalog progress bar from the reading fraction; keep the CFI for
+    // an exact resume. denom keeps single-chapter books sane.
+    final denom = pageCount > 1 ? pageCount - 1 : 1;
+    final page = (_progress * denom).round();
+    ref.read(activeSourceProvider).setProgress(
+          widget.comic.id,
+          page: page,
+          location: location.startCfi,
+          completed: _progress >= 0.999 ? true : null,
+        );
+    if (mounted) setState(() {});
+  }
+
+  void _setFontSize(double size) {
+    setState(() => _fontSize = size);
+    _controller.setFontSize(fontSize: size);
+  }
+
+  void _openTypographySheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF141414),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheet) {
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Text size', style: TextStyle(fontWeight: FontWeight.w600)),
+                  Row(
+                    children: [
+                      const Text('A', style: TextStyle(fontSize: 14)),
+                      Expanded(
+                        child: Slider(
+                          value: _fontSize,
+                          min: 12,
+                          max: 30,
+                          onChanged: (v) {
+                            setSheet(() {});
+                            _setFontSize(v);
+                          },
+                        ),
+                      ),
+                      const Text('A', style: TextStyle(fontSize: 24)),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mode = ref.watch(readingModeProvider);
+    final path = _path;
+    // Resume from wherever we are now (or the saved location on first open) so a
+    // mode switch — which remounts the viewer — doesn't lose the reader's place.
+    final resumeCfi = _currentCfi ?? widget.comic.lastLocation;
+    final settings = _settingsFor(mode);
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF141414),
+        foregroundColor: Colors.white,
+        title: Text(widget.comic.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        actions: [
+          PopupMenuButton<ReadingMode>(
+            tooltip: 'Reading mode',
+            icon: Icon(mode.icon),
+            onSelected: (m) => ref.read(readingModeProvider.notifier).set(m),
+            itemBuilder: (context) => [
+              for (final m in ReadingMode.values)
+                CheckedPopupMenuItem(
+                  value: m,
+                  checked: m == mode,
+                  child: Row(children: [Icon(m.icon, size: 18), const SizedBox(width: 10), Text(m.label)]),
+                ),
+            ],
+          ),
+          IconButton(
+            tooltip: 'Text size',
+            icon: const Icon(Icons.text_fields),
+            onPressed: path == null ? null : _openTypographySheet,
+          ),
+        ],
+      ),
+      body: _error != null
+          ? _EpubMessage(message: _error!)
+          : path == null
+              ? const Center(child: CircularProgressIndicator())
+              : Column(
+                  children: [
+                    Expanded(
+                      child: EpubViewer(
+                        // Remount on mode change so fresh displaySettings (flow/
+                        // spread) actually take effect — the live setters don't.
+                        key: ValueKey(mode),
+                        epubController: _controller,
+                        epubSource: EpubSource.fromFile(File(path)),
+                        initialCfi: (resumeCfi != null && resumeCfi.isNotEmpty) ? resumeCfi : null,
+                        displaySettings: EpubDisplaySettings(
+                          fontSize: _fontSize.round(),
+                          flow: settings.flow,
+                          spread: settings.spread,
+                          snap: true,
+                          theme: EpubTheme.dark(),
+                        ),
+                        onRelocated: _onRelocated,
+                      ),
+                    ),
+                    _progressBar(context),
+                  ],
+                ),
+    );
+  }
+
+  Widget _progressBar(BuildContext context) {
+    final percent = (_progress * 100).round();
+    return Container(
+      color: const Color(0xFF141414),
+      padding: EdgeInsets.only(
+        left: 16,
+        right: 16,
+        top: 6,
+        bottom: MediaQuery.paddingOf(context).bottom + 6,
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.chevron_left, color: Colors.white),
+            onPressed: () => _controller.prev(),
+          ),
+          Expanded(
+            child: LinearProgressIndicator(
+              value: _progress,
+              minHeight: 4,
+              backgroundColor: Colors.white24,
+              valueColor: AlwaysStoppedAnimation(Theme.of(context).colorScheme.primary),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.chevron_right, color: Colors.white),
+            onPressed: () => _controller.next(),
+          ),
+          SizedBox(
+            width: 44,
+            child: Text('$percent%',
+                textAlign: TextAlign.right, style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EpubMessage extends StatelessWidget {
+  const _EpubMessage({required this.message});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(message,
+                textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)),
+            const SizedBox(height: 16),
+            TextButton(
+              onPressed: () => Navigator.of(context).maybePop(),
+              child: const Text('Back'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
