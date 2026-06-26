@@ -8,6 +8,7 @@ import '../../../data/local_files.dart';
 import '../../../data/models/comic_summary.dart';
 import '../../../data/repositories/providers.dart';
 import '../../../data/sources/remote_source.dart';
+import '../reader_keyboard.dart';
 import 'cbz_archive.dart';
 import 'comic_page_source.dart';
 import 'pdf_page_source.dart';
@@ -188,17 +189,23 @@ class _ComicReaderScreenState extends ConsumerState<ComicReaderScreen> {
     final source = _source;
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          if (_error != null)
-            _ReaderMessage(message: _error!)
-          else if (source == null)
-            const Center(child: CircularProgressIndicator())
-          else
-            _body(source),
-          if (_chrome) _topBar(context),
-          if (_chrome && source != null) _bottomBar(context),
-        ],
+      body: ReaderKeyboard(
+        onNext: () => _turn(forward: true),
+        onPrev: () => _turn(forward: false),
+        onFirst: () => _jumpToPage(0),
+        onLast: () => _jumpToPage(_pageCount > 0 ? _pageCount - 1 : 0),
+        child: Stack(
+          children: [
+            if (_error != null)
+              _ReaderMessage(message: _error!)
+            else if (source == null)
+              const Center(child: CircularProgressIndicator())
+            else
+              _body(source),
+            if (_chrome) _topBar(context),
+            if (_chrome && source != null) _bottomBar(context),
+          ],
+        ),
       ),
     );
   }

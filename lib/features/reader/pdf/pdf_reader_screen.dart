@@ -8,6 +8,7 @@ import '../../../data/local_files.dart';
 import '../../../data/models/comic_summary.dart';
 import '../../../data/repositories/providers.dart';
 import '../comic/reading_mode.dart';
+import '../reader_keyboard.dart';
 
 /// PDF reader built on pdfrx's native [PdfViewer] — renders the document as
 /// crisp vectors (re-rasterized per zoom level), and streams large PDFs without
@@ -118,7 +119,7 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
     final maxPage = _pageCount > 0 ? _pageCount : cur;
     final target = forward ? cur + step : cur - step;
     if (target < 1 || target > maxPage) return;
-    _controller.goToPage(pageNumber: target);
+    _controller.goToPage(pageNumber: target, anchor: PdfPageAnchor.all);
   }
 
   void _handleTap(ReadingMode mode, Offset position) {
@@ -133,7 +134,10 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
   }
 
   void _jumpTo(int page) {
-    _controller.goToPage(pageNumber: (page + 1).clamp(1, _pageCount == 0 ? 1 : _pageCount));
+    _controller.goToPage(
+      pageNumber: (page + 1).clamp(1, _pageCount == 0 ? 1 : _pageCount),
+      anchor: PdfPageAnchor.all,
+    );
   }
 
   @override
@@ -142,7 +146,12 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
     final path = _path;
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
+      body: ReaderKeyboard(
+        onNext: () => _turn(mode, forward: true),
+        onPrev: () => _turn(mode, forward: false),
+        onFirst: () => _jumpTo(0),
+        onLast: () => _jumpTo(_pageCount > 0 ? _pageCount - 1 : 0),
+        child: Stack(
         children: [
           if (_error != null)
             _PdfMessage(message: _error!)
@@ -159,9 +168,22 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
                 backgroundColor: Colors.black,
                 margin: 8,
                 panAxis: PanAxis.free,
+                // Fit the whole page to the viewport on navigation (and on first
+                // open) — the default `.top` anchor preserves zoom, which left
+                // pages blown up far past the viewport width.
+                pageAnchor: PdfPageAnchor.all,
                 layoutPages: (pages, params) => _layout(mode, pages, params),
                 onViewerReady: (document, controller) {
                   if (mounted) setState(() => _pageCount = document.pages.length);
+                  // The viewer's own initial goToPage runs before the viewport is
+                  // measured, so the resume page can open zoomed-in past fit.
+                  // Re-fit once a frame after ready, when sizing is settled.
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    controller.goToPage(
+                      pageNumber: (_page + 1).clamp(1, document.pages.length),
+                      anchor: PdfPageAnchor.all,
+                    );
+                  });
                 },
                 onPageChanged: (pageNumber) {
                   if (pageNumber == null) return;
@@ -186,6 +208,7 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
           if (_chrome) _topBar(context, mode),
           if (_chrome && path != null) _bottomBar(context),
         ],
+        ),
       ),
     );
   }
