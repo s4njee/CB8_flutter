@@ -73,12 +73,6 @@ dev_dependencies:
   drift_dev: ^2.34.0
   riverpod_generator: ^4.0.4
   flutter_launcher_icons: ^0.14.4
-  flutter_native_splash: ^2.4.4
-
-# For information on the generic Dart part of this file, see the
-# following page: https://dart.dev/tools/pub/pubspec
-
-# The following section is specific to Flutter packages.
 flutter:
 
   # The following line ensures that the Material Icons font is
@@ -134,8 +128,13 @@ flutter_launcher_icons:
     generate: true
     image_path: "assets/icon/cb8_icon.png"
 
-# App splash screen — regenerate with `dart run flutter_native_splash:create`.
-# Dark brand background with the CB8 mark centered (source in assets/icon/).
+# App splash screen. The generated assets (iOS LaunchScreen/LaunchImage,
+# Android splash drawables + v31 theme) are static and committed, so the
+# flutter_native_splash *package* is NOT a dependency — it broke the iOS
+# release build (malformed SPM package) and the Android build (its module
+# needs compileSdk 34). To regenerate: temporarily `flutter pub add --dev
+# flutter_native_splash`, run `dart run flutter_native_splash:create`, then
+# remove it again. Dark brand background with the CB8 mark (source in assets/icon/).
 flutter_native_splash:
   color: "#0B0B0E"
   image: "assets/icon/cb8_splash.png"

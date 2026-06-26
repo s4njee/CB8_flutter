@@ -128,14 +128,15 @@ deployment-readiness / polish items for shipping the iOS and Android builds.
 - Library grid, cover thumbnails, format badges, and filter chips all render natively.
 - Verified via the iPhone 17 simulator + `--dart-define=SEED=true` sample content.
 - **Physical 13" iPad Air (M2)**: builds, **code-signs** (team CBCWMTN2X2), installs,
-  and **launches cleanly on the real device** (no crash — the menu-bar fix holds on
-  hardware). A pixel screenshot of the tablet layout wasn't capturable this session
-  (iOS 26.5 dropped the legacy `screenshotr` service; the modern path needs a
-  root tunnel). The iPad is ≥768 pt wide → it uses the same `NavigationRail` wide
-  layout already verified on macOS.
+  and **launches cleanly on the real device** in both debug and **release** (no crash —
+  the menu-bar fix holds on hardware; the release build is installed + running). A pixel
+  screenshot of the iPad itself wasn't capturable (iOS 26.5 dropped the legacy
+  `screenshotr` service; the modern path needs a root tunnel) — but the iPad is ≥768 pt
+  wide, so it uses the same `NavigationRail` wide layout that IS screenshot-confirmed on
+  the `cb8_tablet` Android emulator and on macOS.
 
 ### Shared
-- [x] **App icons + splash**: `flutter_launcher_icons` + `flutter_native_splash` wired (source art in `assets/icon/`). CB8 wordmark icon regenerated for iOS/Android (incl. adaptive)/macOS/web (verified on the iOS home screen); CB8 splash (mark on `#0B0B0E`) generated for iOS + Android (incl. Android 12 + dark variants).
+- [x] **App icons + splash**: CB8 wordmark icon via `flutter_launcher_icons` (iOS / Android adaptive / macOS / web) — verified on the iOS home screen + emulator. CB8 splash (mark on `#0B0B0E`) generated for iOS + Android (incl. Android 12 + dark). ⚠️ The `flutter_native_splash` **package** is intentionally NOT a dependency — it broke the iOS *release* build (ships a malformed SPM package: "public headers directory invalid") and the Android build (its module needs compileSdk 34). Only the generated *static* splash assets are kept; re-add the package temporarily to regenerate.
 - [x] **Display name**: "CB8" on both (iOS `CFBundleDisplayName`, Android `android:label`). Verified on the iOS home screen.
 - [ ] **Versioning**: drive store `versionName`/`versionCode` (Android) and `CFBundle*Version` (iOS) from `pubspec.yaml` `version:`; pick a bump strategy.
 - [ ] **Open-in / file associations**: register CBZ/PDF/EPUB so the OS share sheet / Files can hand a file to the importer (import is in-app only today).
@@ -153,18 +154,18 @@ deployment-readiness / polish items for shipping the iOS and Android builds.
 - [ ] **Ship**: `flutter build ipa` → App Store Connect / TestFlight; content rating + privacy-policy URL.
 
 ### Phase 10 — Android (Play Store)
-- [x] **Cleartext to the server** *(was a release blocker)*: added `android:usesCleartextTraffic="true"` (kept broad on purpose — same self-hosted-client reasoning as iOS ATS; a host-scoped `network_security_config.xml` would break remote HTTP servers). *Not yet exercised on an Android device/emulator.*
-- [x] **INTERNET permission** *(was a release blocker)*: added `<uses-permission android:name="android.permission.INTERNET"/>` to the main manifest. *Not yet exercised on Android.*
+- [x] **Cleartext to the server** *(was a release blocker)*: added `android:usesCleartextTraffic="true"` (kept broad on purpose — same self-hosted-client reasoning as iOS ATS; a host-scoped `network_security_config.xml` would break remote HTTP servers). Manifest builds + app runs on the `cb8_tablet` emulator (actual HTTP fetch to a server not exercised — no mock running this session).
+- [x] **INTERNET permission** *(was a release blocker)*: added `<uses-permission android:name="android.permission.INTERNET"/>` to the main manifest. Builds + runs on the emulator.
 - [ ] **Release signing**: `signingConfig` is still `debug`. Create a keystore + `key.properties` (git-ignored) and a release `signingConfig` in `android/app/build.gradle`.
 - [ ] **SDK levels**: `minSdk/targetSdk/compileSdk` inherit the Flutter defaults — pin and confirm `targetSdk` meets the current Play floor.
-- [x] **Adaptive icon + splash**: adaptive icon (foreground = CB8 mark, background `#0B0B0E`) and `android12splash`/`splash` drawables (incl. dark variants) generated across densities. *Not visually verified on Android (no emulator/device here).*
+- [x] **Adaptive icon + splash**: adaptive icon (foreground = CB8 mark, background `#0B0B0E`) and `android12splash`/`splash` drawables (incl. dark variants) generated across densities. In-app CB8 branding verified on the `cb8_tablet` emulator (launcher-icon glyph itself not separately screenshotted).
 - [ ] **R8/ProGuard**: enable release shrinking + keep rules for drift/sqlite3, pdfrx (pdfium), and the inappwebview EPUB engine; verify a release build still reads all three formats.
 - [ ] **16 KB page size**: confirm bundled native libs (sqlite3, pdfium) are 16 KB-aligned for the Android 15 requirement.
 - [ ] **Edge-to-edge / predictive back**: handle the Android 15 edge-to-edge default; opt into predictive back if desired.
 - [ ] **Ship**: `flutter build appbundle` → Play Console listing, data-safety form, content rating.
 
 ### Phase 11 — Mobile testing
-- [x] **iOS** (iPhone 17 sim): seeded CBZ/PDF/EPUB → covers → opened each reader → paged (touch) → progress persisted ("Continue Reading"). Physical iPad Air: clean build/sign/install/launch (see iOS status block). *(Android device pass still pending — no emulator/device available here.)*
+- [x] **iOS** (iPhone 17 sim): seeded CBZ/PDF/EPUB → covers → opened each reader → paged (touch) → progress persisted ("Continue Reading"). **Physical iPad Air**: clean debug **and release** build/sign/install/launch (release installed + running on-device). **Android** (`cb8_tablet` emulator): builds (after dropping the `flutter_native_splash` package), launches, tablet/NavigationRail layout renders, CBZ reader opens + pages. *(Still pending: Android server-mode HTTP fetch, and a signed release-build pass on each store.)*
 - [ ] Server (hybrid) mode over the LAN: add the CB8 connection, log in, browse, read, confirm progress sync.
 - [ ] **Release-build** smoke test on both (signed, shrinking on) — this is what surfaces the ATS / cleartext / INTERNET / ProGuard issues that debug builds hide.
 
