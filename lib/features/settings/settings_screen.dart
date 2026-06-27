@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_controller.dart';
+import '../../data/repositories/providers.dart';
 import '../import/import_controller.dart';
 
 /// Settings: appearance (accent color) and library import.
@@ -51,6 +52,13 @@ class SettingsScreen extends ConsumerWidget {
               Navigator.of(context).maybePop();
             },
           ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.playlist_remove_outlined),
+            title: const Text('Clear Continue Reading'),
+            subtitle: const Text('Empties the shelf — your place in each book is kept'),
+            onTap: () => _confirmClearContinue(context, ref),
+          ),
           // Synthetic sample content is a development aid only — hidden in
           // release builds.
           if (kDebugMode)
@@ -68,6 +76,33 @@ class SettingsScreen extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// Confirms, then clears the continue-reading shelf while keeping every book's
+/// saved position. See [clearContinueReading].
+Future<void> _confirmClearContinue(BuildContext context, WidgetRef ref) async {
+  final messenger = ScaffoldMessenger.of(context);
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Clear Continue Reading?'),
+      content: const Text(
+        'Removes every book from the Continue Reading shelf. Your place in each '
+        'one is kept — a book reappears here if you read it further.',
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Clear')),
+      ],
+    ),
+  );
+  if (confirmed != true) return;
+  final cleared = await clearContinueReading(ref);
+  messenger.showSnackBar(SnackBar(
+    content: Text(cleared == 0
+        ? 'Continue Reading is already empty'
+        : 'Cleared $cleared ${cleared == 1 ? 'book' : 'books'} from Continue Reading'),
+  ));
 }
 
 class _Swatch extends StatelessWidget {

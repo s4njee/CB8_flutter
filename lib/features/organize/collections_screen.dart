@@ -46,10 +46,16 @@ class CollectionsScreen extends ConsumerWidget {
               if (libraries.isEmpty) {
                 return const _Empty();
               }
-              return LayoutBuilder(
+              return RefreshIndicator(
+                onRefresh: () async {
+                  invalidateLibraryProviders(ref);
+                  await ref.read(librariesProvider.future);
+                },
+                child: LayoutBuilder(
                 builder: (context, constraints) {
                   final columns = LibraryGrid.columnsFor(constraints.maxWidth);
                   return GridView.builder(
+                    physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.all(16),
                     gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                       crossAxisCount: columns,
@@ -78,7 +84,7 @@ class CollectionsScreen extends ConsumerWidget {
                     },
                   );
                 },
-              );
+              ));
             },
           ),
         ),

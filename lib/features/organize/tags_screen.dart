@@ -22,7 +22,13 @@ class TagsScreen extends ConsumerWidget {
         if (tags.isEmpty) {
           return const _EmptyTags();
         }
-        return SingleChildScrollView(
+        return RefreshIndicator(
+          onRefresh: () async {
+            invalidateLibraryProviders(ref);
+            await ref.read(tagsProvider.future);
+          },
+          child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
           child: Wrap(
             spacing: 8,
@@ -44,7 +50,7 @@ class TagsScreen extends ConsumerWidget {
                 ),
             ],
           ),
-        );
+        ));
       },
     );
   }

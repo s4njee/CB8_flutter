@@ -28,10 +28,16 @@ class SeriesScreen extends ConsumerWidget {
             hint: 'Series are detected from file names (e.g. "Title v01")',
           );
         }
-        return LayoutBuilder(
+        return RefreshIndicator(
+          onRefresh: () async {
+            invalidateLibraryProviders(ref);
+            await ref.read(seriesProvider.future);
+          },
+          child: LayoutBuilder(
           builder: (context, constraints) {
             final columns = LibraryGrid.columnsFor(constraints.maxWidth);
             return GridView.builder(
+              physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(16),
               gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: columns,
@@ -59,7 +65,7 @@ class SeriesScreen extends ConsumerWidget {
               },
             );
           },
-        );
+        ));
       },
     );
   }

@@ -35,6 +35,10 @@ class RecentScreen extends ConsumerWidget {
           comics: comics,
           onOpen: (comic) => context.push('/read/${comic.id}'),
           onLongPress: (comic) => showComicActionSheet(context, comic),
+          onRefresh: () async {
+            invalidateLibraryProviders(ref);
+            await ref.read(browseComicsProvider(_query).future);
+          },
         );
       },
     );

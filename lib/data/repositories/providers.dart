@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:drift/drift.dart' show Value;
+import 'package:flutter/widgets.dart' show PaintingBinding;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -235,12 +238,74 @@ final comicsListProvider = FutureProvider<List<ComicSummary>>((ref) async {
   return source.listComics(query);
 });
 
-/// "Continue reading" shelf for the active source.
+/// "Continue reading" shelf for the active source, minus anything the user has
+/// cleared (see [DismissedContinueController]) that hasn't been read further.
 final continueReadingProvider = FutureProvider<List<ComicSummary>>((ref) async {
   ref.watch(libraryChangesProvider); // re-run on any catalog change
   final source = ref.watch(activeSourceProvider);
-  return source.continueReading();
+  final dismissed = ref.watch(dismissedContinueProvider);
+  final items = await source.continueReading();
+  if (dismissed.isEmpty) return items;
+  // Keep an item if it was never cleared, or its position has since changed
+  // (the user read further) — in which case it returns to the shelf.
+  return items.where((c) => dismissed[c.id] != continueSignature(c)).toList();
 });
+
+/// Position fingerprint for a continue-reading entry. It changes whenever the
+/// reader advances, which is how a cleared item later returns to the shelf.
+String continueSignature(ComicSummary c) => '${c.lastPage ?? ''}|${c.lastLocation ?? ''}';
+
+/// Comic ids the user has cleared from "Continue reading", each mapped to the
+/// reading position it had at clear time.
+///
+/// This only hides entries from the shelf — it **never touches saved progress**,
+/// so every book still resumes exactly where it left off. An entry stays hidden
+/// only while its position is unchanged; reading further changes the signature
+/// and the book reappears. The set is persisted (a clear survives restarts) and
+/// works for both the local and remote sources, since it simply filters
+/// whatever the active source returns — so it needs no server support.
+class DismissedContinueController extends Notifier<Map<String, String>> {
+  static const _prefKey = 'continue_reading_dismissed_v1';
+
+  SharedPreferences get _prefs => ref.read(sharedPreferencesProvider);
+
+  @override
+  Map<String, String> build() {
+    final raw = _prefs.getString(_prefKey);
+    if (raw == null || raw.isEmpty) return const {};
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      return decoded.map((k, v) => MapEntry(k, '$v'));
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// Hide [items] (the current in-progress set), remembering each one's
+  /// position. Replaces any earlier set, which also prunes stale entries.
+  Future<void> dismiss(Iterable<ComicSummary> items) async {
+    final next = {for (final c in items) c.id: continueSignature(c)};
+    state = next;
+    await _prefs.setString(_prefKey, jsonEncode(next));
+  }
+}
+
+/// Tracks which items the user cleared from the continue-reading shelf.
+final dismissedContinueProvider =
+    NotifierProvider<DismissedContinueController, Map<String, String>>(
+        DismissedContinueController.new);
+
+/// Clears the whole continue-reading shelf for the active source while keeping
+/// every book's saved position. Fetches the full in-progress set (not just the
+/// visible shelf) so nothing is left behind, records it as dismissed, and
+/// refreshes the shelf. Returns how many items were cleared.
+Future<int> clearContinueReading(WidgetRef ref) async {
+  final source = ref.read(activeSourceProvider);
+  final inProgress = await source.continueReading(limit: 1000);
+  await ref.read(dismissedContinueProvider.notifier).dismiss(inProgress);
+  ref.invalidate(continueReadingProvider);
+  return inProgress.length;
+}
 
 /// Comics for an arbitrary query — used by the tag/collection/series browsers
 /// (each passes its own filtered [LibraryQuery]).
@@ -267,3 +332,25 @@ final seriesProvider = FutureProvider<List<SeriesGroup>>((ref) async {
   ref.watch(libraryChangesProvider);
   return ref.watch(activeSourceProvider).listSeries();
 });
+
+/// Force every catalog provider to refetch from the active source.
+///
+/// Local sources live-refresh via [libraryChangesProvider] (Drift table
+/// notifications), but a remote [RemoteSource] has no change stream — so when
+/// the server's library is edited elsewhere (e.g. cleared and rebuilt) the app
+/// keeps showing the cached results. Pull-to-refresh calls this to re-pull.
+void invalidateLibraryProviders(WidgetRef ref) {
+  ref.invalidate(comicsListProvider);
+  ref.invalidate(continueReadingProvider);
+  ref.invalidate(browseComicsProvider);
+  ref.invalidate(tagsProvider);
+  ref.invalidate(librariesProvider);
+  ref.invalidate(seriesProvider);
+  // Covers load via NetworkImage, keyed by the thumbnail URL. A server-side
+  // clear+rebuild can reissue the same comic ids (so the same URL now points at
+  // a different image), which the image cache would otherwise serve stale.
+  // Evicting here makes the explicit refresh gesture a true full reload.
+  PaintingBinding.instance.imageCache
+    ..clear()
+    ..clearLiveImages();
+}

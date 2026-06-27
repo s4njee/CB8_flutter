@@ -7,7 +7,13 @@ import 'comic_card.dart';
 /// (2 cols on phones up to ~8 on very wide screens).
 class LibraryGrid extends StatelessWidget {
   /// Creates a responsive cover grid for [comics].
-  const LibraryGrid({super.key, required this.comics, this.onOpen, this.onLongPress});
+  const LibraryGrid({
+    super.key,
+    required this.comics,
+    this.onOpen,
+    this.onLongPress,
+    this.onRefresh,
+  });
 
   /// Items to display.
   final List<ComicSummary> comics;
@@ -17,6 +23,11 @@ class LibraryGrid extends StatelessWidget {
 
   /// Called on long-press (opens the action sheet).
   final void Function(ComicSummary)? onLongPress;
+
+  /// Pull-to-refresh handler. When set, the grid is wrapped in a
+  /// [RefreshIndicator] and made always-scrollable so the catalog can be
+  /// re-pulled — needed for remote sources that don't push live updates.
+  final Future<void> Function()? onRefresh;
 
   /// Column count for a given available [width], matching CB8's breakpoints.
   static int columnsFor(double width) {
@@ -30,10 +41,11 @@ class LibraryGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
+    final grid = LayoutBuilder(
       builder: (context, constraints) {
         final columns = columnsFor(constraints.maxWidth);
         return GridView.builder(
+          physics: onRefresh != null ? const AlwaysScrollableScrollPhysics() : null,
           padding: const EdgeInsets.all(16),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: columns,
@@ -54,5 +66,7 @@ class LibraryGrid extends StatelessWidget {
         );
       },
     );
+    if (onRefresh == null) return grid;
+    return RefreshIndicator(onRefresh: onRefresh!, child: grid);
   }
 }

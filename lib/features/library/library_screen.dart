@@ -25,26 +25,36 @@ class LibraryScreen extends ConsumerWidget {
     final comicsAsync = ref.watch(comicsListProvider);
     final query = ref.watch(libraryQueryProvider);
 
-    return CustomScrollView(
-      slivers: [
-        SliverToBoxAdapter(child: _FilterRow(query: query)),
-        const SliverToBoxAdapter(child: _ContinueShelf()),
-        comicsAsync.when(
-          loading: () => const SliverFillRemaining(
-            child: Center(child: CircularProgressIndicator()),
+    return RefreshIndicator(
+      // Pull-to-refresh: re-pull the catalog from the active source. Essential
+      // for remote servers, whose library can change server-side without any
+      // change notification reaching the app.
+      onRefresh: () async {
+        invalidateLibraryProviders(ref);
+        await ref.read(comicsListProvider.future);
+      },
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(child: _FilterRow(query: query)),
+          const SliverToBoxAdapter(child: _ContinueShelf()),
+          comicsAsync.when(
+            loading: () => const SliverFillRemaining(
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            error: (e, _) => SliverFillRemaining(
+              child: Center(child: Text('Failed to load library:\n$e', textAlign: TextAlign.center)),
+            ),
+            data: (comics) {
+              if (comics.isEmpty) return const _EmptyState();
+              return SliverPadding(
+                padding: const EdgeInsets.all(16),
+                sliver: _ComicSliverGrid(comics: comics),
+              );
+            },
           ),
-          error: (e, _) => SliverFillRemaining(
-            child: Center(child: Text('Failed to load library:\n$e', textAlign: TextAlign.center)),
-          ),
-          data: (comics) {
-            if (comics.isEmpty) return const _EmptyState();
-            return SliverPadding(
-              padding: const EdgeInsets.all(16),
-              sliver: _ComicSliverGrid(comics: comics),
-            );
-          },
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
