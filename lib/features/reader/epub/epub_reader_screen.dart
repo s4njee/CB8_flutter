@@ -12,6 +12,7 @@ import '../../../core/window_control.dart';
 import '../../../data/repositories/providers.dart';
 import '../comic/reading_mode.dart';
 import '../reader_keyboard.dart';
+import '../widgets/reader_widgets.dart';
 
 /// Reader-selectable font families, injected into the epub.js content as a
 /// `font-family` theme override. The CSS lists web-safe fallbacks so the book
@@ -84,6 +85,18 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
   bool _locationsReady = false;
   ReadingMode? _locationsModeKey;
 
+  // Set while the screen is being popped. Tearing down the viewer can fire a
+  // final `relocated` at the book start; persisting it would clobber the saved
+  // position with page 1 (the iOS twin of the web reader's Back-button bug).
+  bool _disposing = false;
+
+  // Resume safety net. epub.js renders nothing (a blank/black page) if the saved
+  // resume CFI is stale or invalid — `display(cfi)` just rejects, and no
+  // `relocated` ever fires. If the book loads but we never see a relocate, fall
+  // back to the first page so the reader is never stuck on black.
+  Timer? _resumeWatchdog;
+  bool _sawRelocate = false;
+
   @override
   void initState() {
     super.initState();
@@ -92,6 +105,8 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
 
   @override
   void dispose() {
+    _disposing = true; // ignore any teardown relocate so it can't clobber progress
+    _resumeWatchdog?.cancel();
     _readyKick?.cancel();
     super.dispose();
   }
@@ -158,7 +173,23 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
     if (mounted) setState(() => _path = abs);
   }
 
+  /// Arm the resume safety net once the book has loaded: if no `relocated` event
+  /// arrives shortly, the saved CFI failed to display, so render the first page.
+  void _armResumeWatchdog() {
+    _resumeWatchdog?.cancel();
+    if (_sawRelocate) return;
+    _resumeWatchdog = Timer(const Duration(seconds: 5), () {
+      if (!mounted || _sawRelocate || _disposing) return;
+      // No CFI → epub.js displays the book's first section.
+      _controller.webViewController
+          ?.evaluateJavascript(source: 'if(window.rendition){rendition.display();}');
+    });
+  }
+
   void _onRelocated(EpubLocation location) {
+    if (_disposing) return; // teardown relocate (often page 1) — never persist it
+    _sawRelocate = true;
+    _resumeWatchdog?.cancel(); // a real relocate arrived — resume succeeded
     _currentCfi = location.startCfi; // exact resume point; the CFI is always valid
     // Until epub.js has generated its locations index, `location.progress` is 0.0
     // even mid-book (e.g. the relocate fired while resuming into a saved CFI).
@@ -248,71 +279,34 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF141414),
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setSheet) {
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Text size', style: TextStyle(fontWeight: FontWeight.w600)),
-                  Row(
-                    children: [
-                      const Text('A', style: TextStyle(fontSize: 14)),
-                      Expanded(
-                        child: Slider(
-                          value: _fontSize,
-                          min: 12,
-                          max: 30,
-                          onChanged: (v) {
-                            setSheet(() {});
-                            _setFontSize(v);
-                          },
-                        ),
-                      ),
-                      const Text('A', style: TextStyle(fontSize: 24)),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  const Text('Font', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    children: [
-                      for (final font in EpubFont.values)
-                        ChoiceChip(
-                          label: Text(font.label),
-                          selected: _fontFamily == font,
-                          onSelected: (_) {
-                            setSheet(() {});
-                            _setFontFamily(font);
-                          },
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  SwitchListTile(
-                    title: const Text('Light mode'),
-                    secondary: Icon(
-                      _lightMode ? Icons.light_mode : Icons.dark_mode,
-                      color: Colors.white70,
-                    ),
-                    value: _lightMode,
-                    onChanged: (v) {
-                      setSheet(() {});
-                      _setLightMode(v);
-                    },
-                    contentPadding: EdgeInsets.zero,
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
+      builder: (context) => _TypographySheet(
+        fontSize: _fontSize,
+        fontFamily: _fontFamily,
+        lightMode: _lightMode,
+        onFontSize: _setFontSize,
+        onFontFamily: _setFontFamily,
+        onLightMode: _setLightMode,
+      ),
     );
+  }
+
+  /// A mode change remounts [EpubViewer] (via its `ValueKey(mode)`), which
+  /// regenerates epub.js state from scratch. Re-arm the per-mount guards here,
+  /// *during the build that swaps in the new viewer* so the resets land before
+  /// the child mounts (deferring to a post-frame callback would let the new
+  /// viewer's first relocate slip through and clobber progress):
+  ///  - close the locations gate until onLocationLoaded re-fires, and
+  ///  - on macOS, re-arm the ready-kick so the new WebView reloads the book.
+  void _syncViewerForBuild(ReadingMode mode, String? path) {
+    if (_locationsModeKey != mode) {
+      _locationsModeKey = mode;
+      _locationsReady = false;
+    }
+    if (Platform.isMacOS && path != null && _kickArmedFor != mode) {
+      _kickArmedFor = mode;
+      _loaded = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleReadyKick());
+    }
   }
 
   @override
@@ -322,22 +316,8 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
     // Resume from wherever we are now (or the saved location on first open) so a
     // mode switch — which remounts the viewer — doesn't lose the reader's place.
     final resumeCfi = _currentCfi ?? widget.comic.lastLocation;
-    // A mode change remounts EpubViewer (ValueKey(mode)), which regenerates the
-    // locations index from scratch — so progress is briefly untrustworthy again
-    // until onLocationLoaded re-fires. Re-arm the gate so the interim relocate at
-    // progress 0 doesn't clobber the saved page.
-    if (_locationsModeKey != mode) {
-      _locationsModeKey = mode;
-      _locationsReady = false;
-    }
+    _syncViewerForBuild(mode, path);
     final settings = _settingsFor(mode);
-    // The EpubViewer remounts on each mode change (ValueKey(mode)); on macOS,
-    // re-arm the ready-kick for the new WebView so the book reloads.
-    if (Platform.isMacOS && path != null && _kickArmedFor != mode) {
-      _kickArmedFor = mode;
-      _loaded = false;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleReadyKick());
-    }
     return Scaffold(
       backgroundColor: _lightMode ? Colors.white : Colors.black,
       appBar: AppBar(
@@ -345,19 +325,7 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
         foregroundColor: Colors.white,
         title: Text(widget.comic.title, maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
-          PopupMenuButton<ReadingMode>(
-            tooltip: 'Reading mode',
-            icon: Icon(mode.icon),
-            onSelected: (m) => ref.read(readingModeProvider.notifier).set(m),
-            itemBuilder: (context) => [
-              for (final m in ReadingMode.values)
-                CheckedPopupMenuItem(
-                  value: m,
-                  checked: m == mode,
-                  child: Row(children: [Icon(m.icon, size: 18), const SizedBox(width: 10), Text(m.label)]),
-                ),
-            ],
-          ),
+          ReadingModeMenu(mode: mode),
           IconButton(
             tooltip: 'Text size',
             icon: const Icon(Icons.text_fields),
@@ -372,7 +340,7 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
         ],
       ),
       body: _error != null
-          ? _EpubMessage(message: _error!)
+          ? ReaderMessage(message: _error!)
           : path == null
               ? const Center(child: CircularProgressIndicator())
               : ReaderKeyboard(
@@ -407,6 +375,7 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
                               _loaded = true;
                               _readyKick?.cancel();
                               _applyReaderOverrides();
+                              _armResumeWatchdog();
                             },
                             onLocationLoaded: _onLocationLoaded,
                             onRelocated: _onRelocated,
@@ -499,28 +468,95 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
   }
 }
 
-class _EpubMessage extends StatelessWidget {
-  const _EpubMessage({required this.message});
-  final String message;
+/// Bottom sheet for EPUB typography: text size, font family, and light/dark mode.
+/// Holds its own copy of each setting (seeded from the reader) so the controls
+/// update instantly, and forwards every change to the reader via the callbacks.
+class _TypographySheet extends StatefulWidget {
+  const _TypographySheet({
+    required this.fontSize,
+    required this.fontFamily,
+    required this.lightMode,
+    required this.onFontSize,
+    required this.onFontFamily,
+    required this.onLightMode,
+  });
+
+  final double fontSize;
+  final EpubFont fontFamily;
+  final bool lightMode;
+  final ValueChanged<double> onFontSize;
+  final ValueChanged<EpubFont> onFontFamily;
+  final ValueChanged<bool> onLightMode;
+
+  @override
+  State<_TypographySheet> createState() => _TypographySheetState();
+}
+
+class _TypographySheetState extends State<_TypographySheet> {
+  late double _fontSize = widget.fontSize;
+  late EpubFont _fontFamily = widget.fontFamily;
+  late bool _lightMode = widget.lightMode;
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(message,
-                textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)),
-            const SizedBox(height: 16),
-            TextButton(
-              onPressed: () => Navigator.of(context).maybePop(),
-              child: const Text('Back'),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Text size', style: TextStyle(fontWeight: FontWeight.w600)),
+          Row(
+            children: [
+              const Text('A', style: TextStyle(fontSize: 14)),
+              Expanded(
+                child: Slider(
+                  value: _fontSize,
+                  min: 12,
+                  max: 30,
+                  onChanged: (v) {
+                    setState(() => _fontSize = v);
+                    widget.onFontSize(v);
+                  },
+                ),
+              ),
+              const Text('A', style: TextStyle(fontSize: 24)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Text('Font', style: TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              for (final font in EpubFont.values)
+                ChoiceChip(
+                  label: Text(font.label),
+                  selected: _fontFamily == font,
+                  onSelected: (_) {
+                    setState(() => _fontFamily = font);
+                    widget.onFontFamily(font);
+                  },
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          SwitchListTile(
+            title: const Text('Light mode'),
+            secondary: Icon(
+              _lightMode ? Icons.light_mode : Icons.dark_mode,
+              color: Colors.white70,
             ),
-          ],
-        ),
+            value: _lightMode,
+            onChanged: (v) {
+              setState(() => _lightMode = v);
+              widget.onLightMode(v);
+            },
+            contentPadding: EdgeInsets.zero,
+          ),
+        ],
       ),
     );
   }
 }
+

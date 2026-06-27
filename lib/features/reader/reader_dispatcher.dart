@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
@@ -9,6 +11,7 @@ import '../../data/sources/remote_source.dart';
 import 'comic/comic_reader_screen.dart';
 import 'epub/epub_reader_screen.dart';
 import 'pdf/pdf_reader_screen.dart';
+import 'widgets/reader_widgets.dart';
 
 /// Opens the right reader for a catalog item's format.
 ///
@@ -53,7 +56,16 @@ class _ReaderDispatcherState extends ConsumerState<ReaderDispatcher> {
       if (comic.sourceUri == null && isBook && source is RemoteSource) {
         final dir = await getTemporaryDirectory();
         final path = p.join(dir.path, 'remote_${comic.id}.$ext');
-        await source.downloadFile(comic.id, path);
+        // Cache across opens: re-downloading a whole book (a large EPUB/PDF can
+        // be tens of MB) every time made reopening slow. Download to a `.part`
+        // file and rename on success, so an interrupted/partial download is never
+        // cached and served as a corrupt book.
+        final file = File(path);
+        if (!await file.exists() || await file.length() == 0) {
+          final partPath = '$path.part';
+          await source.downloadFile(comic.id, partPath);
+          await File(partPath).rename(path);
+        }
         resolved = comic.copyWith(sourceUri: path);
       }
       if (!mounted) return;
@@ -81,7 +93,7 @@ class _ReaderDispatcherState extends ConsumerState<ReaderDispatcher> {
     }
     final comic = _comic;
     if (comic == null) {
-      return _ReaderError(message: _error == null ? 'Item not found.' : 'Could not open:\n$_error');
+      return _errorScreen(_error == null ? 'Item not found.' : 'Could not open:\n$_error');
     }
     switch (comic.extension) {
       case 'cbz':
@@ -92,38 +104,13 @@ class _ReaderDispatcherState extends ConsumerState<ReaderDispatcher> {
       case 'epub':
         return EpubReaderScreen(comic: comic);
       default:
-        return _ReaderError(
-          message: '${comic.extension?.toUpperCase() ?? 'This format'} is not supported yet.',
+        return _errorScreen(
+          '${comic.extension?.toUpperCase() ?? 'This format'} is not supported yet.',
         );
     }
   }
+
+  Widget _errorScreen(String message) =>
+      Scaffold(backgroundColor: Colors.black, body: ReaderMessage(message: message));
 }
 
-class _ReaderError extends StatelessWidget {
-  const _ReaderError({required this.message});
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(message,
-                  textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)),
-              const SizedBox(height: 16),
-              TextButton(
-                onPressed: () => Navigator.of(context).maybePop(),
-                child: const Text('Back'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}

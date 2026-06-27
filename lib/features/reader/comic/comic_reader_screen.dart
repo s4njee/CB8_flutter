@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:photo_view/photo_view.dart';
@@ -12,6 +10,7 @@ import '../../../data/models/comic_summary.dart';
 import '../../../data/repositories/providers.dart';
 import '../../../data/sources/remote_source.dart';
 import '../reader_keyboard.dart';
+import '../widgets/reader_widgets.dart';
 import 'cbz_archive.dart';
 import 'comic_page_source.dart';
 import 'pdf_page_source.dart';
@@ -205,13 +204,14 @@ class _ComicReaderScreenState extends ConsumerState<ComicReaderScreen> {
         child: Stack(
           children: [
             if (_error != null)
-              _ReaderMessage(message: _error!)
+              ReaderMessage(message: _error!)
             else if (source == null)
               const Center(child: CircularProgressIndicator())
             else
               _body(source),
-            if (_chrome) _topBar(context),
-            if (_chrome && source != null) _bottomBar(context),
+            if (_chrome) ReaderTopBar(title: widget.comic.title, mode: _mode),
+            if (_chrome && source != null)
+              ReaderBottomBar(page: _page, count: _pageCount, onSeek: _jumpToPage),
           ],
         ),
       ),
@@ -282,115 +282,5 @@ class _ComicReaderScreenState extends ConsumerState<ComicReaderScreen> {
     }
   }
 
-  Widget _topBar(BuildContext context) {
-    return Positioned(
-      top: 0,
-      left: 0,
-      right: 0,
-      child: Container(
-        color: Colors.black.withValues(alpha: 0.55),
-        padding: EdgeInsets.only(top: MediaQuery.paddingOf(context).top),
-        child: Row(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.arrow_back, color: Colors.white),
-              onPressed: () => Navigator.of(context).maybePop(),
-            ),
-            Expanded(
-              child: Text(
-                widget.comic.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-              ),
-            ),
-            if (Platform.isMacOS)
-              IconButton(
-                tooltip: 'Toggle fullscreen (f)',
-                icon: const Icon(Icons.fullscreen, color: Colors.white),
-                onPressed: WindowControl.toggleFullscreen,
-              ),
-            PopupMenuButton<ReadingMode>(
-              tooltip: 'Reading mode',
-              icon: Icon(_mode.icon, color: Colors.white),
-              onSelected: (m) => ref.read(readingModeProvider.notifier).set(m),
-              itemBuilder: (context) => [
-                for (final m in ReadingMode.values)
-                  CheckedPopupMenuItem(
-                    value: m,
-                    checked: m == _mode,
-                    child: Row(
-                      children: [
-                        Icon(m.icon, size: 18),
-                        const SizedBox(width: 10),
-                        Text(m.label),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-            const SizedBox(width: 4),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _bottomBar(BuildContext context) {
-    final count = _pageCount;
-    return Positioned(
-      bottom: 0,
-      left: 0,
-      right: 0,
-      child: Container(
-        color: Colors.black.withValues(alpha: 0.55),
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.paddingOf(context).bottom + 8,
-          top: 8,
-          left: 12,
-          right: 12,
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Slider(
-                value: _page.toDouble().clamp(0, (count - 1).toDouble().clamp(0, double.infinity)),
-                min: 0,
-                max: (count - 1).toDouble().clamp(0, double.infinity),
-                onChanged: count > 1 ? (v) => _jumpToPage(v.round()) : null,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text('${_page + 1} / $count', style: const TextStyle(color: Colors.white)),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
-class _ReaderMessage extends StatelessWidget {
-  const _ReaderMessage({required this.message});
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(message,
-                textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)),
-            const SizedBox(height: 16),
-            TextButton(
-              onPressed: () => Navigator.of(context).maybePop(),
-              child: const Text('Back'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}

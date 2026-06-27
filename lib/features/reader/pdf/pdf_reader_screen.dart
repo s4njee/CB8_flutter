@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -13,6 +12,7 @@ import '../../../data/models/comic_summary.dart';
 import '../../../data/repositories/providers.dart';
 import '../comic/reading_mode.dart';
 import '../reader_keyboard.dart';
+import '../widgets/reader_widgets.dart';
 
 /// PDF reader built on pdfrx's native [PdfViewer] — renders the document as
 /// crisp vectors (re-rasterized per zoom level), and streams large PDFs without
@@ -209,7 +209,7 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
         child: Stack(
         children: [
           if (_error != null)
-            _PdfMessage(message: _error!)
+            ReaderMessage(message: _error!)
           else if (path == null)
             const Center(child: CircularProgressIndicator())
           else ...[
@@ -280,8 +280,9 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
                     ),
             ),
           ],
-          if (_chrome) _topBar(context, mode),
-          if (_chrome && path != null) _bottomBar(context),
+          if (_chrome) ReaderTopBar(title: widget.comic.title, mode: mode),
+          if (_chrome && path != null)
+            ReaderBottomBar(page: _page, count: _pageCount, onSeek: _jumpTo),
         ],
         ),
         ),
@@ -289,92 +290,6 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
     );
   }
 
-  Widget _topBar(BuildContext context, ReadingMode mode) {
-    return Positioned(
-      top: 0,
-      left: 0,
-      right: 0,
-      child: Container(
-        color: Colors.black.withValues(alpha: 0.55),
-        padding: EdgeInsets.only(top: MediaQuery.paddingOf(context).top),
-        child: Row(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.arrow_back, color: Colors.white),
-              onPressed: () => Navigator.of(context).maybePop(),
-            ),
-            Expanded(
-              child: Text(
-                widget.comic.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-              ),
-            ),
-            if (Platform.isMacOS)
-              IconButton(
-                tooltip: 'Toggle fullscreen (f)',
-                icon: const Icon(Icons.fullscreen, color: Colors.white),
-                onPressed: WindowControl.toggleFullscreen,
-              ),
-            PopupMenuButton<ReadingMode>(
-              tooltip: 'Reading mode',
-              icon: Icon(mode.icon, color: Colors.white),
-              onSelected: (m) => ref.read(readingModeProvider.notifier).set(m),
-              itemBuilder: (context) => [
-                for (final m in ReadingMode.values)
-                  CheckedPopupMenuItem(
-                    value: m,
-                    checked: m == mode,
-                    child: Row(
-                      children: [
-                        Icon(m.icon, size: 18),
-                        const SizedBox(width: 10),
-                        Text(m.label),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-            const SizedBox(width: 4),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _bottomBar(BuildContext context) {
-    final count = _pageCount;
-    final maxVal = math.max(0.0, (count - 1).toDouble());
-    return Positioned(
-      bottom: 0,
-      left: 0,
-      right: 0,
-      child: Container(
-        color: Colors.black.withValues(alpha: 0.55),
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.paddingOf(context).bottom + 8,
-          top: 8,
-          left: 12,
-          right: 12,
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Slider(
-                value: _page.toDouble().clamp(0.0, maxVal),
-                min: 0,
-                max: maxVal,
-                onChanged: count > 1 ? (v) => _jumpTo(v.round()) : null,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text('${_page + 1} / $count', style: const TextStyle(color: Colors.white)),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 /// A translucent tap target with an optional desktop hover cursor. Taps fall
@@ -398,27 +313,3 @@ class _TapZone extends StatelessWidget {
   }
 }
 
-class _PdfMessage extends StatelessWidget {
-  const _PdfMessage({required this.message});
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(message, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)),
-            const SizedBox(height: 16),
-            TextButton(
-              onPressed: () => Navigator.of(context).maybePop(),
-              child: const Text('Back'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
