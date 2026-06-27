@@ -31,7 +31,7 @@ const _destinations = <_Destination>[
   _Destination('Recent', Icons.history_outlined, Icons.history, RecentScreen()),
   _Destination('Collections', Icons.collections_bookmark_outlined,
       Icons.collections_bookmark, CollectionsScreen()),
-  _Destination('Folders', Icons.folder_outlined, Icons.folder, SeriesScreen()),
+  _Destination('Series', Icons.menu_book_outlined, Icons.menu_book, SeriesScreen()),
   _Destination('Tags', Icons.tag_outlined, Icons.tag, TagsScreen()),
 ];
 

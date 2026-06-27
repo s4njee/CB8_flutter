@@ -8,10 +8,10 @@ import '../library/widgets/browse_grid_screen.dart';
 import '../library/widgets/library_grid.dart';
 import 'widgets/group_card.dart';
 
-/// Folders tab — series auto-grouped from parsed metadata. Tapping a series
+/// Series tab — series auto-grouped from parsed metadata. Tapping a series
 /// opens its comics, ordered by volume then chapter.
 class SeriesScreen extends ConsumerWidget {
-  /// Creates the Folders (series) tab.
+  /// Creates the Series tab.
   const SeriesScreen({super.key});
 
   @override

@@ -262,7 +262,7 @@ final librariesProvider = FutureProvider<List<LibraryInfo>>((ref) async {
   return ref.watch(activeSourceProvider).listLibraries();
 });
 
-/// Auto-derived series groups (Folders tab).
+/// Auto-derived series groups (Series tab).
 final seriesProvider = FutureProvider<List<SeriesGroup>>((ref) async {
   ref.watch(libraryChangesProvider);
   return ref.watch(activeSourceProvider).listSeries();

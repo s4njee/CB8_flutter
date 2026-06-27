@@ -70,6 +70,7 @@ class CollectionsScreen extends ConsumerWidget {
                             builder: (_) => BrowseGridScreen(
                               title: lib.name,
                               query: LibraryQuery(libraryId: lib.id, limit: 500),
+                              collectionId: lib.id,
                             ),
                           ),
                         ),
