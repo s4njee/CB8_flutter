@@ -13,10 +13,23 @@ import '../../../data/repositories/providers.dart';
 import '../comic/reading_mode.dart';
 import '../reader_keyboard.dart';
 
+/// Reader-selectable font families, injected into the epub.js content as a
+/// `font-family` theme override. The CSS lists web-safe fallbacks so the book
+/// renders consistently across iOS/Android/macOS WebViews.
+enum EpubFont {
+  sansSerif('Sans Serif', 'Helvetica, Arial, sans-serif'),
+  serif('Serif', 'Georgia, "Times New Roman", serif'),
+  mono('Monospace', 'Menlo, Consolas, monospace');
+
+  const EpubFont(this.label, this.css);
+  final String label;
+  final String css;
+}
+
 /// Reflowable EPUB reader — port of CB8's `EpubReader`, which used epub.js.
 /// `flutter_epub_viewer` runs the same epub.js engine in a WebView, so we get
-/// paginated reflow, font-size control, a dark theme, and CFI locations that map
-/// directly onto our `lastLocation` column for resume.
+/// paginated reflow, font-size/family control, light/dark theming, and CFI
+/// locations that map directly onto our `lastLocation` column for resume.
 class EpubReaderScreen extends ConsumerStatefulWidget {
   const EpubReaderScreen({super.key, required this.comic});
 
@@ -32,6 +45,8 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
   String? _error;
   double _progress = 0; // 0..1
   double _fontSize = 16; // px
+  EpubFont _fontFamily = EpubFont.sansSerif;
+  bool _lightMode = false;
   // Latest reading position (epub.js CFI). The package's live setFlow/setSpread
   // are broken — they interpolate the enum, sending JS "EpubFlow.scrolled" rather
   // than "scrolled" — so a mode change instead remounts EpubViewer with fresh
@@ -147,6 +162,29 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
     _controller.setFontSize(fontSize: size);
   }
 
+  void _setFontFamily(EpubFont font) {
+    setState(() => _fontFamily = font);
+    _applyReaderOverrides();
+  }
+
+  void _setLightMode(bool light) {
+    setState(() => _lightMode = light);
+    _applyReaderOverrides();
+  }
+
+  void _applyReaderOverrides() {
+    final wv = _controller.webViewController;
+    if (wv == null) return;
+    final bg = _lightMode ? '#ffffff' : '#121212';
+    final fg = _lightMode ? '#000000' : '#ffffff';
+    wv.evaluateJavascript(
+      source: "if(window.rendition&&rendition.themes){"
+          "rendition.themes.override('font-family','${_fontFamily.css}',true);"
+          "rendition.themes.override('background','$bg',true);"
+          "rendition.themes.override('color','$fg',true);}",
+    );
+  }
+
   void _openTypographySheet() {
     showModalBottomSheet<void>(
       context: context,
@@ -178,6 +216,37 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
                       const Text('A', style: TextStyle(fontSize: 24)),
                     ],
                   ),
+                  const SizedBox(height: 16),
+                  const Text('Font', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      for (final font in EpubFont.values)
+                        ChoiceChip(
+                          label: Text(font.label),
+                          selected: _fontFamily == font,
+                          onSelected: (_) {
+                            setSheet(() {});
+                            _setFontFamily(font);
+                          },
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  SwitchListTile(
+                    title: const Text('Light mode'),
+                    secondary: Icon(
+                      _lightMode ? Icons.light_mode : Icons.dark_mode,
+                      color: Colors.white70,
+                    ),
+                    value: _lightMode,
+                    onChanged: (v) {
+                      setSheet(() {});
+                      _setLightMode(v);
+                    },
+                    contentPadding: EdgeInsets.zero,
+                  ),
                 ],
               ),
             );
@@ -203,7 +272,7 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleReadyKick());
     }
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: _lightMode ? Colors.white : Colors.black,
       appBar: AppBar(
         backgroundColor: const Color(0xFF141414),
         foregroundColor: Colors.white,
@@ -267,18 +336,7 @@ class _EpubReaderScreenState extends ConsumerState<EpubReaderScreen> {
                         onEpubLoaded: () {
                           _loaded = true;
                           _readyKick?.cancel();
-                          // macOS ignores the WebView's transparentBackground, so
-                          // the dark Container behind it never shows — leaving the
-                          // theme's white text on the WebView's white default.
-                          // Force the dark background (EpubTheme.dark = #121212)
-                          // into the content so the text is legible.
-                          if (Platform.isMacOS) {
-                            _controller.webViewController?.evaluateJavascript(
-                              source: 'if(window.rendition&&rendition.themes){'
-                                  "rendition.themes.override('background','#121212',true);"
-                                  "rendition.themes.override('color','#ffffff',true);}",
-                            );
-                          }
+                          _applyReaderOverrides();
                         },
                         onRelocated: _onRelocated,
                       ),
