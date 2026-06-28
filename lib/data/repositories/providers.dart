@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:drift/drift.dart' show Value;
@@ -33,6 +34,16 @@ final cookieJarProvider = Provider<CookieJar>((ref) => CookieJar());
 /// The on-device source. Always available in the hybrid model.
 final localSourceProvider = Provider<LibrarySource>((ref) {
   return LocalSource(ref.watch(databaseProvider));
+});
+
+/// Lazily loads a single local comic's cover thumbnail by id. The list queries
+/// skip the cover BLOB to stay light, so each card watches this — only on-screen
+/// covers are loaded/decoded, and `autoDispose` frees them as cards scroll off.
+final localCoverProvider =
+    FutureProvider.autoDispose.family<Uint8List?, String>((ref, id) async {
+  final source = ref.watch(localSourceProvider);
+  if (source is LocalSource) return source.coverBytes(id);
+  return null;
 });
 
 const _activeConnectionKey = 'active_connection';

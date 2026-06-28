@@ -17,12 +17,25 @@ class CbzArchive {
 
   final List<ArchiveFile> _pages;
 
+  /// Memoized per-page bytes. Critical for performance: `MemoryImage`'s cache key
+  /// is the byte buffer's *identity*, so returning a fresh copy each call (the
+  /// old behaviour) defeated the image cache and forced a full re-decode of every
+  /// visible page on each rebuild (e.g. tapping to toggle the reader chrome).
+  /// Returning a stable instance lets the cache do its job.
+  final Map<int, Uint8List> _bytes = {};
+
   /// Number of image pages in the archive.
   int get pageCount => _pages.length;
 
-  /// Decompressed bytes for page [index].
-  Uint8List pageBytes(int index) =>
-      Uint8List.fromList(_pages[index].content as List<int>);
+  /// Decompressed bytes for page [index] — the same instance on every call.
+  Uint8List pageBytes(int index) => _bytes[index] ??= _decode(_pages[index]);
+
+  static Uint8List _decode(ArchiveFile f) {
+    final content = f.content;
+    // `archive` already caches the decompressed content, so when it's a
+    // Uint8List we reuse that instance directly (no extra copy).
+    return content is Uint8List ? content : Uint8List.fromList(content as List<int>);
+  }
 
   /// Reads and decodes the CBZ (zip) at [path] into an in-memory archive.
   static Future<CbzArchive> open(String path) async {

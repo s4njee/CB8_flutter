@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
@@ -266,13 +267,35 @@ class _AppShellState extends ConsumerState<AppShell> {
   }
 }
 
-class _SearchField extends ConsumerWidget {
+class _SearchField extends ConsumerStatefulWidget {
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_SearchField> createState() => _SearchFieldState();
+}
+
+class _SearchFieldState extends ConsumerState<_SearchField> {
+  Timer? _debounce;
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  // Debounce so each keystroke doesn't fire a query — on a remote source that
+  // was a network round-trip per character.
+  void _onChanged(String v) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), () {
+      ref.read(libraryQueryProvider.notifier).setSearch(v);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return SizedBox(
       height: 38,
       child: TextField(
-        onChanged: (v) => ref.read(libraryQueryProvider.notifier).setSearch(v),
+        onChanged: _onChanged,
         textAlignVertical: TextAlignVertical.center,
         decoration: const InputDecoration(
           hintText: 'Search',

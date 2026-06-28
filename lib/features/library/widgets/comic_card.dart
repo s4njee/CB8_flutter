@@ -1,8 +1,8 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../data/models/comic_summary.dart';
+import 'comic_cover.dart';
 
 /// A single library tile — port of CB8's `ComicCard.tsx`.
 ///
@@ -59,7 +59,7 @@ class _ComicCardState extends State<ComicCard> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  _Cover(comic: comic),
+                  ComicCover(comic: comic),
                   if (comic.extension != null)
                     Positioned(
                       top: 6,
@@ -107,40 +107,6 @@ class _ComicCardState extends State<ComicCard> {
           ),
         ),
       ),
-    );
-  }
-}
-
-class _Cover extends StatelessWidget {
-  const _Cover({required this.comic});
-  final ComicSummary comic;
-
-  @override
-  Widget build(BuildContext context) {
-    if (comic.coverThumbnail != null) {
-      return Image.memory(comic.coverThumbnail!, fit: BoxFit.cover, gaplessPlayback: true);
-    }
-    if (comic.coverUrl != null) {
-      return CachedNetworkImage(
-        imageUrl: comic.coverUrl!,
-        httpHeaders: comic.imageHeaders,
-        fit: BoxFit.cover,
-        placeholder: (_, _) => const _CoverPlaceholder(),
-        errorWidget: (_, _, _) => const _CoverPlaceholder(),
-      );
-    }
-    return const _CoverPlaceholder();
-  }
-}
-
-class _CoverPlaceholder extends StatelessWidget {
-  const _CoverPlaceholder();
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: CbColors.surfaceAlt,
-      alignment: Alignment.center,
-      child: const Icon(Icons.menu_book_outlined, color: CbColors.mutedForeground, size: 32),
     );
   }
 }

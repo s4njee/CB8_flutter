@@ -6,6 +6,7 @@ import '../../../data/db/database.dart' show MediaTypes;
 import '../../../data/models/comic_summary.dart';
 import '../../../data/repositories/providers.dart';
 import '../../../data/sources/library_source.dart';
+import '../../library/widgets/comic_cover.dart';
 
 /// Opens the full-screen picker for adding library items to the collection
 /// [collectionId] (named [collectionName]). Membership edits apply immediately.
@@ -166,27 +167,16 @@ class _AddToCollectionScreenState extends ConsumerState<_AddToCollectionScreen> 
   }
 }
 
-/// Small 2:3 cover for a picker row — inline bytes (local) or URL (remote).
+/// Small 2:3 cover for a picker row — shares the lazy-loading [ComicCover].
 class _CoverThumb extends StatelessWidget {
   const _CoverThumb({required this.comic});
   final ComicSummary comic;
 
   @override
   Widget build(BuildContext context) {
-    Widget child;
-    if (comic.coverThumbnail != null) {
-      child = Image.memory(comic.coverThumbnail!, fit: BoxFit.cover, gaplessPlayback: true);
-    } else if (comic.coverUrl != null) {
-      child = Image.network(comic.coverUrl!, headers: comic.imageHeaders, fit: BoxFit.cover);
-    } else {
-      child = const ColoredBox(
-        color: CbColors.surfaceAlt,
-        child: Icon(Icons.menu_book_outlined, size: 18, color: CbColors.mutedForeground),
-      );
-    }
     return ClipRRect(
       borderRadius: BorderRadius.circular(4),
-      child: SizedBox(width: 32, height: 48, child: child),
+      child: SizedBox(width: 32, height: 48, child: ComicCover(comic: comic)),
     );
   }
 }

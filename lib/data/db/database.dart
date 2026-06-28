@@ -260,7 +260,35 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+        onCreate: (m) async {
+          await m.createAll();
+          await _createIndexes();
+        },
+        onUpgrade: (m, from, to) async {
+          // v2 adds covering indexes for the hot library list/sort/group queries.
+          if (from < 2) await _createIndexes();
+        },
+      );
+
+  /// Indexes backing the library queries (filter/sort by series, recency, date,
+  /// media type, title, and collection membership). `IF NOT EXISTS` keeps this
+  /// idempotent so it can run on both fresh installs and upgrades.
+  Future<void> _createIndexes() async {
+    for (final stmt in const [
+      'CREATE INDEX IF NOT EXISTS idx_comics_series ON comics (series_name)',
+      'CREATE INDEX IF NOT EXISTS idx_comics_last_read ON comics (last_read)',
+      'CREATE INDEX IF NOT EXISTS idx_comics_date_added ON comics (date_added)',
+      'CREATE INDEX IF NOT EXISTS idx_comics_media_type ON comics (media_type)',
+      'CREATE INDEX IF NOT EXISTS idx_comics_title ON comics (title)',
+      'CREATE INDEX IF NOT EXISTS idx_library_comics_comic ON library_comics (comic_id)',
+    ]) {
+      await customStatement(stmt);
+    }
+  }
 
   static QueryExecutor _open() =>
       driftDatabase(name: 'cb8'); // app-data dir on every platform

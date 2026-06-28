@@ -24,10 +24,12 @@ class LocalSource implements LibrarySource {
   @override
   Stream<void> watchChanges() => _db.tableUpdates().map((_) {});
 
-  ComicSummary _toSummary(ComicRow row, {required bool favorite}) {
-    final uri = row.uri;
+  static String? _extOf(String uri) {
     final dot = uri.lastIndexOf('.');
-    final ext = dot >= 0 ? uri.substring(dot + 1).toLowerCase() : null;
+    return dot >= 0 ? uri.substring(dot + 1).toLowerCase() : null;
+  }
+
+  ComicSummary _toSummary(ComicRow row, {required bool favorite}) {
     return ComicSummary(
       id: row.id.toString(),
       title: row.title,
@@ -41,7 +43,40 @@ class LocalSource implements LibrarySource {
       seriesName: row.seriesName,
       volumeNumber: row.volumeNumber,
       chapterNumber: row.chapterNumber,
-      extension: ext,
+      extension: _extOf(row.uri),
+      sourceUri: row.uri,
+    );
+  }
+
+  /// Columns needed to render a library card — deliberately *excludes* the
+  /// `cover_thumbnail` BLOB so list queries don't pull every cover into memory.
+  /// Covers load lazily per visible card (see `localCoverProvider`).
+  List<Expression> get _summaryColumns {
+    final c = _db.comics;
+    return [
+      c.id, c.uri, c.title, c.pageCount, c.mediaType, c.lastPage,
+      c.lastLocation, c.completed, c.seriesName, c.volumeNumber, c.chapterNumber,
+    ];
+  }
+
+  ComicSummary _summaryFromRow(TypedResult r, Set<int> favIds) {
+    final c = _db.comics;
+    final id = r.read(c.id)!;
+    final uri = r.read(c.uri)!;
+    return ComicSummary(
+      id: id.toString(),
+      title: r.read(c.title)!,
+      pageCount: r.read(c.pageCount)!,
+      mediaType: r.read(c.mediaType)!,
+      coverThumbnail: null, // loaded lazily by the card to keep lists light
+      lastPage: r.read(c.lastPage),
+      lastLocation: r.read(c.lastLocation),
+      completed: r.read(c.completed)!,
+      isFavorite: favIds.contains(id),
+      seriesName: r.read(c.seriesName),
+      volumeNumber: r.read(c.volumeNumber),
+      chapterNumber: r.read(c.chapterNumber),
+      extension: _extOf(uri),
       sourceUri: uri,
     );
   }
@@ -49,37 +84,38 @@ class LocalSource implements LibrarySource {
   @override
   Future<List<ComicSummary>> listComics(LibraryQuery query) async {
     final favIds = await _favoriteIds();
-    final q = _db.select(_db.comics);
+    final c = _db.comics;
+    final q = _db.selectOnly(c)..addColumns(_summaryColumns);
 
-    if (query.mediaType != null) {
-      q.where((t) => t.mediaType.equals(query.mediaType!));
-    }
+    // Build conditions, then AND them in a single where so the BLOB-free
+    // projection and the typed builder don't fight over multi-where semantics.
+    final conds = <Expression<bool>>[];
+    if (query.mediaType != null) conds.add(c.mediaType.equals(query.mediaType!));
     final search = query.search?.trim();
     if (search != null && search.isNotEmpty) {
       final like = '%$search%';
-      q.where((t) =>
-          t.title.like(like) | t.seriesName.like(like) | t.author.like(like));
+      conds.add(c.title.like(like) | c.seriesName.like(like) | c.author.like(like));
     }
     switch (query.readStatus) {
       case ReadStatus.unread:
-        q.where((t) => t.lastPage.isNull() & t.completed.equals(false));
+        conds.add(c.lastPage.isNull() & c.completed.equals(false));
       case ReadStatus.inProgress:
-        q.where((t) => t.lastPage.isNotNull() & t.completed.equals(false));
+        conds.add(c.lastPage.isNotNull() & c.completed.equals(false));
       case ReadStatus.completed:
-        q.where((t) => t.completed.equals(true));
+        conds.add(c.completed.equals(true));
       case ReadStatus.all:
         break;
     }
     if (query.favoritesOnly) {
       if (favIds.isEmpty) return const [];
-      q.where((t) => t.id.isIn(favIds));
+      conds.add(c.id.isIn(favIds));
     }
     if (query.tag != null) {
       final sub = _db.selectOnly(_db.comicTags)
         ..addColumns([_db.comicTags.comicId])
         ..join([innerJoin(_db.tags, _db.tags.id.equalsExp(_db.comicTags.tagId))])
         ..where(_db.tags.name.equals(query.tag!));
-      q.where((t) => t.id.isInQuery(sub));
+      conds.add(c.id.isInQuery(sub));
     }
     if (query.libraryId != null) {
       final libId = int.tryParse(query.libraryId!);
@@ -87,53 +123,50 @@ class LocalSource implements LibrarySource {
       final sub = _db.selectOnly(_db.libraryComics)
         ..addColumns([_db.libraryComics.comicId])
         ..where(_db.libraryComics.libraryId.equals(libId));
-      q.where((t) => t.id.isInQuery(sub));
+      conds.add(c.id.isInQuery(sub));
     }
-    if (query.seriesName != null) {
-      q.where((t) => t.seriesName.equals(query.seriesName!));
-    }
-    if (query.hasBeenRead) {
-      q.where((t) => t.lastRead.isNotNull());
-    }
+    if (query.seriesName != null) conds.add(c.seriesName.equals(query.seriesName!));
+    if (query.hasBeenRead) conds.add(c.lastRead.isNotNull());
+
+    if (conds.isNotEmpty) q.where(conds.reduce((a, b) => a & b));
 
     // Series views read best ordered by volume then chapter; everything else
     // uses the requested sort.
     if (query.seriesName != null) {
       q.orderBy([
-        (t) => OrderingTerm(expression: t.volumeNumber, nulls: NullsOrder.last),
-        (t) => OrderingTerm(expression: t.chapterNumber, nulls: NullsOrder.last),
-        (t) => OrderingTerm(expression: t.title),
+        OrderingTerm(expression: c.volumeNumber, nulls: NullsOrder.last),
+        OrderingTerm(expression: c.chapterNumber, nulls: NullsOrder.last),
+        OrderingTerm(expression: c.title),
       ]);
     } else {
       final mode = query.descending ? OrderingMode.desc : OrderingMode.asc;
       q.orderBy([
-        (t) => switch (query.sort) {
-              LibrarySort.title => OrderingTerm(expression: t.title, mode: mode),
-              LibrarySort.dateAdded => OrderingTerm(expression: t.dateAdded, mode: mode),
-              LibrarySort.fileSize => OrderingTerm(expression: t.fileSize, mode: mode),
-              LibrarySort.pageCount => OrderingTerm(expression: t.pageCount, mode: mode),
-              LibrarySort.lastRead => OrderingTerm(expression: t.lastRead, mode: mode),
-            },
+        switch (query.sort) {
+          LibrarySort.title => OrderingTerm(expression: c.title, mode: mode),
+          LibrarySort.dateAdded => OrderingTerm(expression: c.dateAdded, mode: mode),
+          LibrarySort.fileSize => OrderingTerm(expression: c.fileSize, mode: mode),
+          LibrarySort.pageCount => OrderingTerm(expression: c.pageCount, mode: mode),
+          LibrarySort.lastRead => OrderingTerm(expression: c.lastRead, mode: mode),
+        },
       ]);
     }
     q.limit(query.limit, offset: query.offset);
 
     final rows = await q.get();
-    return rows
-        .map((r) => _toSummary(r, favorite: favIds.contains(r.id)))
-        .toList();
+    return rows.map((r) => _summaryFromRow(r, favIds)).toList();
   }
 
   @override
   Future<List<ComicSummary>> continueReading({int limit = 20}) async {
     final favIds = await _favoriteIds();
-    final q = _db.select(_db.comics)
-      ..where((t) =>
-          t.lastPage.isNotNull() & t.completed.equals(false) & t.lastRead.isNotNull())
-      ..orderBy([(t) => OrderingTerm(expression: t.lastRead, mode: OrderingMode.desc)])
+    final c = _db.comics;
+    final q = _db.selectOnly(c)
+      ..addColumns(_summaryColumns)
+      ..where(c.lastPage.isNotNull() & c.completed.equals(false) & c.lastRead.isNotNull())
+      ..orderBy([OrderingTerm(expression: c.lastRead, mode: OrderingMode.desc)])
       ..limit(limit);
     final rows = await q.get();
-    return rows.map((r) => _toSummary(r, favorite: favIds.contains(r.id))).toList();
+    return rows.map((r) => _summaryFromRow(r, favIds)).toList();
   }
 
   @override
@@ -180,6 +213,20 @@ class LocalSource implements LibrarySource {
     } else {
       await (_db.delete(_db.favorites)..where((t) => t.comicId.equals(intId))).go();
     }
+  }
+
+  /// Loads a single comic's cover BLOB. List queries deliberately skip the BLOB
+  /// for memory, so each card fetches its cover lazily through this (one
+  /// primary-key lookup per visible card).
+  Future<Uint8List?> coverBytes(String id) async {
+    final intId = int.tryParse(id);
+    if (intId == null) return null;
+    final c = _db.comics;
+    final row = await (_db.selectOnly(c)
+          ..addColumns([c.coverThumbnail])
+          ..where(c.id.equals(intId)))
+        .getSingleOrNull();
+    return row?.read(c.coverThumbnail);
   }
 
   Future<Set<int>> _favoriteIds() async {
