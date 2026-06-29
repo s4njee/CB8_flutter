@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/comic_summary.dart';
@@ -8,6 +9,7 @@ import '../../../data/repositories/providers.dart';
 /// collections. All edits go through the active source, so the library refreshes
 /// live via the change stream.
 Future<void> showComicActionSheet(BuildContext context, ComicSummary comic) {
+  HapticFeedback.mediumImpact(); // confirm the long-press (mobile)
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: const Color(0xFF141414),
