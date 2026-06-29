@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
+import '../../../core/immersive_reading.dart';
 import '../../../core/window_control.dart';
 import '../../../data/local_files.dart';
 import '../../../data/models/comic_summary.dart';
@@ -164,10 +166,18 @@ class _ComicReaderScreenState extends ConsumerState<ComicReaderScreen> {
 
   @override
   void dispose() {
+    restoreSystemChrome(); // bring the system bars back when leaving the reader
     _pageController?.dispose();
     if (_scrollListening) _positions.itemPositions.removeListener(_onScrollPositions);
     _source?.dispose();
     super.dispose();
+  }
+
+  /// Flip the in-app chrome and match the system bars: hidden chrome goes
+  /// full-bleed (immersive) on mobile, shown chrome restores the bars.
+  void _toggleChrome() {
+    setState(() => _chrome = !_chrome);
+    setReaderImmersion(chromeVisible: _chrome);
   }
 
   void _saveProgress(int page) {
@@ -195,6 +205,7 @@ class _ComicReaderScreenState extends ConsumerState<ComicReaderScreen> {
     final target = (c.page?.round() ?? 0) + (forward ? 1 : -1);
     final max = (_mode == ReadingMode.doublePage ? _spreadCount : _pageCount) - 1;
     if (target < 0 || target > max) return;
+    HapticFeedback.selectionClick(); // subtle tick on a page turn (mobile)
     c.animateToPage(target, duration: const Duration(milliseconds: 220), curve: Curves.easeOut);
   }
 
@@ -207,7 +218,7 @@ class _ComicReaderScreenState extends ConsumerState<ComicReaderScreen> {
     } else if (dx > width * 0.67) {
       _turn(forward: !_direction.isRtl);
     } else {
-      setState(() => _chrome = !_chrome);
+      _toggleChrome();
     }
   }
 
@@ -282,7 +293,7 @@ class _ComicReaderScreenState extends ConsumerState<ComicReaderScreen> {
       case ReadingMode.scroll:
         return GestureDetector(
           behavior: HitTestBehavior.translucent,
-          onTap: () => setState(() => _chrome = !_chrome),
+          onTap: _toggleChrome,
           child: ScrollablePositionedList.builder(
             itemScrollController: _scrollController,
             itemPositionsListener: _positions,

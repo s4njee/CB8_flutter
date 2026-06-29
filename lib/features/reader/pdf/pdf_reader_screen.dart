@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import '../../../core/immersive_reading.dart';
 import '../../../core/window_control.dart';
 import '../../../data/local_files.dart';
 import '../../../data/models/comic_summary.dart';
@@ -52,6 +53,12 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
     _resolve();
   }
 
+  @override
+  void dispose() {
+    restoreSystemChrome(); // bring the system bars back when leaving the reader
+    super.dispose();
+  }
+
   Future<void> _resolve() async {
     final uri = widget.comic.sourceUri;
     if (uri == null) {
@@ -60,6 +67,13 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
     }
     final abs = await resolveLibraryPath(uri);
     if (mounted) setState(() => _path = abs);
+  }
+
+  /// Flip the in-app chrome and match the system bars: hidden chrome goes
+  /// full-bleed (immersive) on mobile, shown chrome restores the bars.
+  void _toggleChrome() {
+    setState(() => _chrome = !_chrome);
+    setReaderImmersion(chromeVisible: _chrome);
   }
 
   void _saveProgress(int page) {
@@ -127,6 +141,7 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
     final maxPage = _pageCount > 0 ? _pageCount : cur;
     final target = forward ? cur + step : cur - step;
     if (target < 1 || target > maxPage) return;
+    HapticFeedback.selectionClick(); // subtle tick on a page turn (mobile)
     _showPage(target - 1, mode);
   }
 
@@ -255,7 +270,7 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
               child: mode == ReadingMode.scroll
                   ? GestureDetector(
                       behavior: HitTestBehavior.translucent,
-                      onTapUp: (_) => setState(() => _chrome = !_chrome),
+                      onTapUp: (_) => _toggleChrome(),
                     )
                   : Row(
                       children: [
@@ -267,7 +282,7 @@ class _PdfReaderScreenState extends ConsumerState<PdfReaderScreen> {
                         ),
                         Expanded(
                           child: _TapZone(
-                            onTap: () => setState(() => _chrome = !_chrome),
+                            onTap: _toggleChrome,
                           ),
                         ),
                         Expanded(
