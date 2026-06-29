@@ -1,0 +1,269 @@
+/**
+ * @module
+ * Authentication Setup (better-auth)
+ *
+ * Architecture overview for Junior Devs:
+ * Login, sessions, and password verification are handled by the `better-auth`
+ * library so we don't hand-roll auth. This file wires it to our existing
+ * database and data model. Key decisions:
+ *  - It reuses the same better-sqlite3 connection as its auth database.
+ *  - It maps better-auth's default `user` model onto our plural `users` table.
+ *  - IDs stay SQLite INTEGER AUTOINCREMENT so all tables that reference a user
+ *    (user_progress, bookmarks, user_favorites, reading_history) keep working.
+ *  - Passwords keep using bcryptjs, so legacy `password_hash` rows still verify
+ *    after migration into the `account` table.
+ *  - The username plugin allows logging in with username *or* email.
+ */
+
+import { betterAuth } from 'better-auth';
+import { username as usernamePlugin } from 'better-auth/plugins';
+import * as bcrypt from 'bcryptjs';
+import * as crypto from 'node:crypto';
+import * as os from 'node:os';
+import type { Pool } from 'pg';
+import { sendEmail } from './emailSender';
+import {
+  authResetPasswordLink,
+  resolveAuthBaseURL,
+  trustedOriginsForBaseURL,
+  withSameHostOrigin,
+} from './authHelpers';
+
+// The full inferred type of `betterAuth(...)` depends on the exact options
+// passed; caching it as the generic return type causes variance errors between
+// the plugin-augmented user shape and the base `User`. Narrow publicly to the
+// subset of the API we actually consume.
+export type AuthUser = {
+  id: number | string;
+  email: string;
+  name: string;
+  isAdmin?: boolean | null;
+  username?: string | null;
+};
+
+type AuthResponseWithHeaders<T> = {
+  headers?: Headers | null;
+  response: T;
+};
+
+type SignInResponse = {
+  redirect: boolean;
+  token: string;
+  url?: string | null;
+  user: AuthUser;
+};
+
+export interface AuthInstance {
+  handler: (req: Request) => Promise<Response>;
+  api: {
+    getSession: (args: { headers: Headers }) => Promise<{
+      user: AuthUser | null;
+      session: unknown;
+    } | null>;
+    signInUsername: (args: {
+      body: { username: string; password: string };
+      headers?: Headers;
+      returnHeaders: true;
+    }) => Promise<AuthResponseWithHeaders<SignInResponse>>;
+    signInEmail: (args: {
+      body: { email: string; password: string };
+      headers?: Headers;
+      returnHeaders: true;
+    }) => Promise<AuthResponseWithHeaders<SignInResponse>>;
+    signOut: (args: { headers: Headers; returnHeaders: true }) => Promise<AuthResponseWithHeaders<{ success: boolean }>>;
+  };
+}
+
+let _auth: AuthInstance | null = null;
+
+/**
+ * Resolve the better-auth signing secret.
+ *
+ * Priority:
+ *   1. BETTER_AUTH_SECRET environment variable (production / Docker deploys).
+ *   2. A secret persisted in app_meta under the key 'auth_secret' (desktop /
+ *      standalone runs). This keeps session cookies valid across restarts so
+ *      the user does not have to log in again every time the app is restarted.
+ *   3. Generate a new secret, persist it, and use it going forward.
+ *
+ * Using a persistent secret means better-auth's signed session cookies remain
+ * valid after a restart. With an ephemeral (random) secret every restart
+ * invalidated all existing sessions, forcing manual re-authentication or
+ * relying on the initial-password auto-login fallback — which stops working
+ * once the admin clears the initial credentials.
+ */
+async function resolveSecret(pool: Pool): Promise<string> {
+  const fromEnv = process.env.BETTER_AUTH_SECRET;
+  if (fromEnv && fromEnv.length >= 32) return fromEnv;
+
+  const AUTH_SECRET_KEY = 'auth_secret';
+  const result = await pool.query<{ value: string }>('SELECT value FROM app_meta WHERE key = $1', [AUTH_SECRET_KEY]);
+  const row = result.rows[0];
+  if (row?.value && row.value.length >= 32) return row.value;
+
+  // Generate a new secret, persist it so the next restart reuses it.
+  const newSecret = crypto.randomBytes(32).toString('hex');
+  await pool.query(
+    'INSERT INTO app_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+    [AUTH_SECRET_KEY, newSecret],
+  );
+  return newSecret;
+}
+
+function resolveBaseURL(): string {
+  return resolveAuthBaseURL(process.env.BETTER_AUTH_URL);
+}
+
+/**
+ * Origins better-auth will accept. Includes the configured BASE_URL plus
+ * common loopback aliases and, if the web server is listening on a port,
+ * the current LAN IP. Without this, users hitting 127.0.0.1 or their LAN
+ * address instead of `localhost` are rejected with a 500.
+ */
+function resolveTrustedOrigins(): string[] {
+  return trustedOriginsForBaseURL(
+    resolveBaseURL(),
+    os.networkInterfaces(),
+    process.env.BETTER_AUTH_TRUSTED_ORIGINS,
+  );
+}
+
+export async function createAuth(pool: Pool): Promise<AuthInstance> {
+  if (_auth) return _auth;
+  const secret = await resolveSecret(pool);
+  _auth = buildAuth(pool, secret) as unknown as AuthInstance;
+  return _auth;
+}
+
+function buildAuth(database: Pool, secret: string) {
+  return betterAuth({
+    database,
+    secret,
+    baseURL: resolveBaseURL(),
+    telemetry: {
+      enabled: false,
+    },
+    advanced: {
+      database: { generateId: false },
+      cookiePrefix: 'cb8',
+    },
+    // Our SQLite schema uses snake_case columns (user_id, expires_at, …)
+    // but better-auth's default adapter issues queries with camelCase field
+    // names verbatim. Without these mappings, every session / account
+    // insert errors with "no such column: userId" and the sign-in path
+    // returns a silent 500 from FAILED_TO_CREATE_SESSION.
+    user: {
+      modelName: 'users',
+      fields: {
+        emailVerified: 'email_verified',
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+        // `displayUsername` is added by the username plugin; cast widens
+        // the record so TS doesn't complain about the plugin field.
+        displayUsername: 'display_username',
+      } as Record<string, string>,
+      additionalFields: {
+        isAdmin: {
+          type: 'boolean',
+          required: false,
+          defaultValue: false,
+          input: false,
+          fieldName: 'is_admin',
+        },
+      },
+    },
+    // Keep sessions alive for 30 days with a sliding window (cookie is
+    // refreshed on each access after 1 day of inactivity). This prevents
+    // the "must re-login every week" problem on desktop where the app may
+    // not be opened daily. The persistent auth_secret (above) ensures
+    // the signed session cookie stays valid across server restarts.
+    session: {
+      expiresIn: 60 * 60 * 24 * 30,  // 30 days
+      updateAge:  60 * 60 * 24,       // refresh cookie if older than 1 day
+      fields: {
+        userId: 'user_id',
+        expiresAt: 'expires_at',
+        ipAddress: 'ip_address',
+        userAgent: 'user_agent',
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+      },
+    },
+    account: {
+      fields: {
+        userId: 'user_id',
+        accountId: 'account_id',
+        providerId: 'provider_id',
+        accessToken: 'access_token',
+        refreshToken: 'refresh_token',
+        idToken: 'id_token',
+        accessTokenExpiresAt: 'access_token_expires_at',
+        refreshTokenExpiresAt: 'refresh_token_expires_at',
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+      },
+    },
+    verification: {
+      fields: {
+        expiresAt: 'expires_at',
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+      },
+    },
+    emailAndPassword: {
+      enabled: true,
+      autoSignIn: true,
+      minPasswordLength: 8,
+      password: {
+        hash: (password) => bcrypt.hash(password, 10),
+        verify: ({ hash, password }) => bcrypt.compare(password, hash),
+      },
+      sendResetPassword: async ({ user, token }) => {
+        // Bypass better-auth's server-side redirect in favor of an SPA route
+        // that renders the new-password form and calls /reset-password itself.
+        const link = authResetPasswordLink(resolveBaseURL(), token);
+        await sendEmail({
+          to: user.email,
+          subject: 'Reset your CB8 password',
+          text: `Click to reset your password: ${link}\n\nIf you did not request this, you can ignore this email.`,
+        });
+      },
+    },
+    emailVerification: {
+      sendOnSignUp: true,
+      autoSignInAfterVerification: true,
+      // After verifying, better-auth redirects to this URL (clients may
+      // override via callbackURL on the sign-up request).
+      sendVerificationEmail: async ({ user, url }) => {
+        await sendEmail({
+          to: user.email,
+          subject: 'Verify your CB8 email',
+          text: `Welcome to CB8! Click to verify your email: ${url}`,
+        });
+      },
+    },
+    plugins: [
+      usernamePlugin({
+        minUsernameLength: 3,
+        maxUsernameLength: 30,
+      }),
+    ],
+    // Per-request trusted origins: always include the configured static set,
+    // and additionally trust the Origin header when it points at the same
+    // host as the incoming request (i.e. the SPA we just served). This makes
+    // NodePort/LoadBalancer/Ingress deploys work without curating every
+    // possible host:port pair in env vars.
+    trustedOrigins: (request) => {
+      return withSameHostOrigin(
+        resolveTrustedOrigins(),
+        request?.headers.get('origin'),
+        request?.headers.get('host'),
+      );
+    },
+  });
+}
+
+export function getAuth(): AuthInstance {
+  if (!_auth) throw new Error('auth not initialized — call createAuth(db) first');
+  return _auth;
+}
